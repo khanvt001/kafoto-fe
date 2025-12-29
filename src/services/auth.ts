@@ -60,6 +60,35 @@ export const authService = {
         return data;
     },
 
+    logout: async (): Promise<void> => {
+        const refreshToken = authService.getRefreshToken();
+        if (!refreshToken) {
+            authService.clearTokens();
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_URL}/auth/logout`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authService.getAccessToken()}`,
+                },
+                body: JSON.stringify({ refresh_token: refreshToken }),
+            });
+
+            if (!response.ok) {
+                console.error('Logout request failed');
+            }
+        } catch (error) {
+            console.error('Logout error:', error);
+        } finally {
+            // Always clear tokens and redirect, even if API call fails
+            authService.clearTokens();
+            window.location.href = '/login';
+        }
+    },
+
     fetchWithAuth: async (url: string, options: RequestInit = {}) => {
         let token = authService.getAccessToken();
 
