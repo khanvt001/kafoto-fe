@@ -1,73 +1,132 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import Masonry from 'react-masonry-css';
 import { albumService } from '../services/album';
 import type { Album, Photo, PaginationMeta } from '../services/album';
-import DashboardHeader from '../components/dashboard/DashboardHeader';
+import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
-import EditAlbumModal from '../components/album/EditAlbumModal';
 import LazyImage from '../components/common/LazyImage';
 
-const AlbumDetailPage = () => {
-    const { albumId } = useParams<{ albumId: string }>();
-    const navigate = useNavigate();
+const API_URL = 'http://127.0.0.1:8000/api/v1';
+
+interface VerifyPasswordResponse {
+    access_token: string;
+    token_type: string;
+    expires_in: number;
+    album_code: string;
+}
+
+const ClientAlbumViewPage = () => {
+    const { code } = useParams<{ code: string }>();
     const [album, setAlbum] = useState<Album | null>(null);
     const [photos, setPhotos] = useState<Photo[]>([]);
     const [photosMeta, setPhotosMeta] = useState<PaginationMeta | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadingPhotos, setLoadingPhotos] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [needsPassword, setNeedsPassword] = useState(true);
+    const [password, setPassword] = useState('');
+    const [passwordError, setPasswordError] = useState('');
+    const [verifying, setVerifying] = useState(false);
     const [selectedPhoto, setSelectedPhoto] = useState<number | null>(null);
+    const [currentAccessToken, setCurrentAccessToken] = useState<string | null>(null);
 
     // Infinite scroll
     const observerTarget = useRef<HTMLDivElement>(null);
 
-    // Edit mode states
+    // Selection and download states
     const [isSelectionMode, setIsSelectionMode] = useState(false);
     const [selectedPhotos, setSelectedPhotos] = useState<Set<number>>(new Set());
-    const [showEditModal, setShowEditModal] = useState(false);
-    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-    const [deleting, setDeleting] = useState(false);
+    const [downloading, setDownloading] = useState(false);
+
+    // Get the localStorage key for this album's token
+    const getTokenKey = (albumCode: string) => `client_access_token_${albumCode}`;
+
+    // Get saved token from localStorage
+    const getSavedToken = (albumCode: string): string | null => {
+        return localStorage.getItem(getTokenKey(albumCode));
+    };
+
+    // Save token to localStorage
+    const saveToken = (albumCode: string, token: string) => {
+        localStorage.setItem(getTokenKey(albumCode), token);
+    };
+
+    // Clear token from localStorage
+    const clearToken = (albumCode: string) => {
+        localStorage.removeItem(getTokenKey(albumCode));
+    };
 
     useEffect(() => {
-        const fetchAlbumAndPhotos = async () => {
-            if (!albumId) {
-                setError('Album ID is missing');
+        if (code) {
+            // Try to use saved token first
+            const savedToken = getSavedToken(code);
+            if (savedToken) {
+                fetchAlbum(savedToken);
+            } else {
+                fetchAlbum();
+            }
+        }
+    }, [code]);
+
+    const fetchAlbum = async (token?: string) => {
+        if (!code) return;
+
+        try {
+            setLoading(true);
+            setError(null);
+
+            // Fetch album details
+            const albumData = await albumService.getAlbumByCode(code, token);
+            setAlbum(albumData);
+
+            // Check if password is required and we don't have a token
+            if (albumData.is_password_protected && !token) {
+                setNeedsPassword(true);
                 setLoading(false);
                 return;
             }
 
+            // Fetch first page of photos
+            if (!token) {
+                throw new Error('Access token required for photos');
+            }
+
             try {
-                setLoading(true);
-                setError(null);
-
-                // Fetch album details
-                const albumData = await albumService.getAlbumDetail(parseInt(albumId));
-                setAlbum(albumData);
-
-                // Fetch first page of photos
-                const photosData = await albumService.getAlbumPhotos(parseInt(albumId), 1, 30);
+                const photosData = await albumService.getAlbumPhotosByCode(code, token, 1, 30);
                 setPhotos(photosData.items);
                 setPhotosMeta(photosData.meta);
-            } catch (err) {
-                console.error('Error fetching album:', err);
-                setError(err instanceof Error ? err.message : 'Failed to load album');
-            } finally {
-                setLoading(false);
-            }
-        };
+                setNeedsPassword(false);
 
-        fetchAlbumAndPhotos();
-    }, [albumId]);
+                // Save the current access token for downloads
+                setCurrentAccessToken(token);
+            } catch (photoErr) {
+                // If photos fetch fails with 401, token is invalid
+                if (photoErr instanceof Error && photoErr.message.includes('401')) {
+                    if (token) {
+                        clearToken(code);
+                    }
+                    setNeedsPassword(true);
+                } else {
+                    throw photoErr;
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching album:', err);
+            setError(err instanceof Error ? err.message : 'Failed to load album');
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const loadMorePhotos = useCallback(async () => {
-        if (!albumId || !photosMeta || loadingPhotos) return;
+        if (!code || !currentAccessToken || !photosMeta || loadingPhotos) return;
         if (photosMeta.page >= photosMeta.total_pages) return;
 
         try {
             setLoadingPhotos(true);
             const nextPage = photosMeta.page + 1;
-            const photosData = await albumService.getAlbumPhotos(parseInt(albumId), nextPage, 30);
+            const photosData = await albumService.getAlbumPhotosByCode(code, currentAccessToken, nextPage, 30);
             setPhotos(prev => [...prev, ...photosData.items]);
             setPhotosMeta(photosData.meta);
         } catch (err) {
@@ -76,7 +135,7 @@ const AlbumDetailPage = () => {
         } finally {
             setLoadingPhotos(false);
         }
-    }, [albumId, photosMeta, loadingPhotos]);
+    }, [code, currentAccessToken, photosMeta, loadingPhotos]);
 
     // Infinite scroll observer
     useEffect(() => {
@@ -101,6 +160,53 @@ const AlbumDetailPage = () => {
         };
     }, [loadMorePhotos, loadingPhotos]);
 
+    const handlePasswordSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+
+        if (!code || !password) return;
+
+        try {
+            setVerifying(true);
+            setPasswordError('');
+
+            const response = await fetch(`${API_URL}/albums/verify-password`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    code: code,
+                    password: password,
+                }),
+            });
+
+            if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    setPasswordError('Incorrect password. Please try again.');
+                } else {
+                    throw new Error('Failed to verify password');
+                }
+                return;
+            }
+
+            const data: VerifyPasswordResponse = await response.json();
+
+            // Save the token to localStorage
+            saveToken(code, data.access_token);
+
+            // Save to current state for downloads
+            setCurrentAccessToken(data.access_token);
+
+            // Fetch album with the access token
+            await fetchAlbum(data.access_token);
+        } catch (err) {
+            console.error('Error verifying password:', err);
+            setPasswordError(err instanceof Error ? err.message : 'Failed to verify password');
+        } finally {
+            setVerifying(false);
+        }
+    };
+
     const formatDate = (dateString: string) => {
         const date = new Date(dateString);
         return new Intl.DateTimeFormat('en-US', {
@@ -108,14 +214,6 @@ const AlbumDetailPage = () => {
             month: 'long',
             day: 'numeric',
         }).format(date);
-    };
-
-    const copyToClipboard = async (text: string) => {
-        try {
-            await navigator.clipboard.writeText(text);
-        } catch (err) {
-            console.error('Failed to copy:', err);
-        }
     };
 
     const openLightbox = (index: number) => {
@@ -168,44 +266,69 @@ const AlbumDetailPage = () => {
         }
     };
 
-    const handleRemovePhotos = async () => {
-        if (!albumId || selectedPhotos.size === 0) return;
+    const downloadBlob = (blob: Blob, filename: string) => {
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+    };
+
+    const handleDownloadSingle = async (photoId: number, filename: string) => {
+        if (!code || !currentAccessToken) return;
 
         try {
-            setDeleting(true);
-            await albumService.removePhotos(parseInt(albumId), Array.from(selectedPhotos));
-
-            // Refresh album data and photos
-            const updatedAlbum = await albumService.getAlbumDetail(parseInt(albumId));
-            setAlbum(updatedAlbum);
-
-            const photosData = await albumService.getAlbumPhotos(parseInt(albumId), 1, 30);
-            setPhotos(photosData.items);
-            setPhotosMeta(photosData.meta);
-
-            // Exit selection mode
-            setIsSelectionMode(false);
-            setSelectedPhotos(new Set());
-            setShowDeleteConfirm(false);
+            setDownloading(true);
+            const blob = await albumService.downloadSinglePhoto(code, photoId, currentAccessToken);
+            downloadBlob(blob, filename);
         } catch (err) {
-            console.error('Error removing photos:', err);
-            alert(err instanceof Error ? err.message : 'Failed to remove photos');
+            console.error('Error downloading photo:', err);
+            alert(err instanceof Error ? err.message : 'Failed to download photo');
         } finally {
-            setDeleting(false);
+            setDownloading(false);
         }
     };
 
-    const handleUpdateAlbum = async (updates: { title?: string; password?: string | null }) => {
-        if (!albumId) return;
+    const handleDownloadSelected = async () => {
+        if (!code || !currentAccessToken || selectedPhotos.size === 0 || !album) return;
 
-        const updatedAlbum = await albumService.updateAlbum(parseInt(albumId), updates);
-        setAlbum(updatedAlbum);
+        try {
+            setDownloading(true);
+            const photoIds = Array.from(selectedPhotos);
+
+            // If only 1 photo selected, use single photo download API
+            if (photoIds.length === 1) {
+                const photoId = photoIds[0];
+                const photo = photos.find(p => p.id === photoId);
+                if (photo) {
+                    const blob = await albumService.downloadSinglePhoto(code, photoId, currentAccessToken);
+                    downloadBlob(blob, photo.original_file_name);
+                }
+            } else {
+                // Multiple photos - use ZIP download API
+                const blob = await albumService.downloadMultiplePhotos(code, photoIds, currentAccessToken);
+                const filename = `${album.title || 'photos'}_${photoIds.length}_photos.zip`;
+                downloadBlob(blob, filename);
+            }
+
+            // Exit selection mode after download
+            setIsSelectionMode(false);
+            setSelectedPhotos(new Set());
+        } catch (err) {
+            console.error('Error downloading photos:', err);
+            alert(err instanceof Error ? err.message : 'Failed to download photos');
+        } finally {
+            setDownloading(false);
+        }
     };
 
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex flex-col">
-                <DashboardHeader />
+                <Header />
                 <main className="flex-grow px-8 py-12 flex items-center justify-center">
                     <div className="animate-spin">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -218,20 +341,70 @@ const AlbumDetailPage = () => {
         );
     }
 
+    if (needsPassword) {
+        return (
+            <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex flex-col">
+                <Header />
+                <main className="flex-grow px-8 py-12 flex items-center justify-center">
+                    <div className="w-full max-w-md">
+                        <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-8">
+                            <div className="text-center mb-6">
+                                <svg className="mx-auto mb-4 text-blue-600" width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M18 8H17V6C17 3.24 14.76 1 12 1C9.24 1 7 3.24 7 6V8H6C4.9 8 4 8.9 4 10V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V10C20 8.9 19.1 8 18 8ZM12 17C10.9 17 10 16.1 10 15C10 13.9 10.9 13 12 13C13.1 13 14 13.9 14 15C14 16.1 13.1 17 12 17ZM15.1 8H8.9V6C8.9 4.29 10.29 2.9 12 2.9C13.71 2.9 15.1 4.29 15.1 6V8Z" fill="currentColor" />
+                                </svg>
+                                <h2 className="text-2xl font-bold text-gray-900 mb-2">Password Protected Album</h2>
+                                <p className="text-gray-600">Please enter the password to view this album</p>
+                                {code && (
+                                    <p className="text-sm text-gray-500 mt-2">Album Code: <span className="font-mono font-semibold">{code}</span></p>
+                                )}
+                            </div>
+
+                            <form onSubmit={handlePasswordSubmit} className="space-y-4">
+                                <div>
+                                    <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
+                                        Password
+                                    </label>
+                                    <input
+                                        type="password"
+                                        id="password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        placeholder="Enter album password"
+                                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                                            passwordError ? 'border-red-500' : 'border-gray-300'
+                                        }`}
+                                        required
+                                        autoFocus
+                                    />
+                                    {passwordError && (
+                                        <p className="text-sm text-red-600 mt-1">{passwordError}</p>
+                                    )}
+                                </div>
+
+                                <button
+                                    type="submit"
+                                    disabled={verifying}
+                                    className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed font-medium"
+                                >
+                                    {verifying ? 'Verifying...' : 'View Album'}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </main>
+                <Footer />
+            </div>
+        );
+    }
+
     if (error || !album) {
         return (
             <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex flex-col">
-                <DashboardHeader />
+                <Header />
                 <main className="flex-grow px-8 py-12">
                     <div className="max-w-7xl mx-auto">
                         <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
                             <p className="text-red-600 mb-4">{error || 'Album not found'}</p>
-                            <button
-                                onClick={() => navigate('/')}
-                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-                            >
-                                Back to Albums
-                            </button>
                         </div>
                     </div>
                 </main>
@@ -242,83 +415,38 @@ const AlbumDetailPage = () => {
 
     return (
         <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex flex-col">
-            <DashboardHeader />
+            <Header />
 
             <main className="flex-grow px-8 py-12">
                 <div className="max-w-7xl mx-auto">
-                    {/* Back Button */}
-                    <button
-                        onClick={() => navigate('/')}
-                        className="flex items-center text-gray-600 hover:text-gray-900 mb-6 transition-colors"
-                    >
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mr-2">
-                            <path d="M20 11H7.83L13.42 5.41L12 4L4 12L12 20L13.41 18.59L7.83 13H20V11Z" fill="currentColor" />
-                        </svg>
-                        Back to Albums
-                    </button>
-
                     {/* Album Header */}
                     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                            <div>
-                                <h1 className="text-3xl font-bold text-gray-900 mb-2">{album.title}</h1>
-                                <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600">
-                                    <span className="flex items-center">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mr-2">
-                                            <path d="M21 19V5C21 3.9 20.1 3 19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19ZM8.5 13.5L11 16.51L14.5 12L19 18H5L8.5 13.5Z" fill="currentColor" />
-                                        </svg>
-                                        {album.total_photos} photo{album.total_photos !== 1 ? 's' : ''}
-                                    </span>
-                                    <span className="flex items-center">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mr-2">
-                                            <path d="M11.99 2C6.47 2 2 6.48 2 12C2 17.52 6.47 22 11.99 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 11.99 2ZM12 20C7.58 20 4 16.42 4 12C4 7.58 7.58 4 12 4C16.42 4 20 7.58 20 12C20 16.42 16.42 20 12 20ZM12.5 7H11V13L16.25 16.15L17 14.92L12.5 12.25V7Z" fill="currentColor" />
-                                        </svg>
-                                        Created {formatDate(album.created_at)}
-                                    </span>
-                                </div>
+                        <div className="text-center">
+                            <h1 className="text-3xl font-bold text-gray-900 mb-2">{album.title}</h1>
+                            <div className="flex flex-wrap items-center justify-center gap-4 text-sm text-gray-600 mb-4">
+                                <span className="flex items-center">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mr-2">
+                                        <path d="M21 19V5C21 3.9 20.1 3 19 3H5C3.9 3 3 3.9 3 5V19C3 20.1 3.9 21 5 21H19C20.1 21 21 20.1 21 19ZM8.5 13.5L11 16.51L14.5 12L19 18H5L8.5 13.5Z" fill="currentColor" />
+                                    </svg>
+                                    {album.total_photos} photo{album.total_photos !== 1 ? 's' : ''}
+                                </span>
+                                <span className="flex items-center">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mr-2">
+                                        <path d="M11.99 2C6.47 2 2 6.48 2 12C2 17.52 6.47 22 11.99 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 11.99 2ZM12 20C7.58 20 4 16.42 4 12C4 7.58 7.58 4 12 4C16.42 4 20 7.58 20 12C20 16.42 16.42 20 12 20ZM12.5 7H11V13L16.25 16.15L17 14.92L12.5 12.25V7Z" fill="currentColor" />
+                                    </svg>
+                                    {formatDate(album.created_at)}
+                                </span>
                             </div>
-
-                            <div className="flex flex-col gap-2">
-                                <div className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
-                                    <div className="flex items-center space-x-2">
-                                        <span className="text-sm text-gray-600">Share Code:</span>
-                                        <span className="text-lg font-mono font-bold text-gray-900">{album.code}</span>
-                                    </div>
-                                    <button
-                                        onClick={() => copyToClipboard(album.code)}
-                                        className="text-blue-600 hover:text-blue-700 ml-4"
-                                        title="Copy code"
-                                    >
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                            <path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor" />
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div className="flex gap-2">
-                                    <button
-                                        onClick={() => setShowEditModal(true)}
-                                        className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors"
-                                    >
-                                        Edit Album
-                                    </button>
-                                    <button
-                                        onClick={toggleSelectionMode}
-                                        className={`flex-1 px-4 py-2 text-sm rounded-lg transition-colors ${
-                                            isSelectionMode
-                                                ? 'bg-red-600 text-white hover:bg-red-700'
-                                                : 'border border-blue-300 text-blue-600 hover:bg-blue-50'
-                                        }`}
-                                    >
-                                        {isSelectionMode ? 'Cancel' : 'Select Photos'}
-                                    </button>
-                                </div>
-                                <button
-                                    onClick={() => copyToClipboard(`${window.location.origin}/albums/code/${album.code}`)}
-                                    className="px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors"
-                                >
-                                    Copy Share Link
-                                </button>
-                            </div>
+                            <button
+                                onClick={toggleSelectionMode}
+                                className={`px-6 py-2 text-sm rounded-lg transition-colors font-medium ${
+                                    isSelectionMode
+                                        ? 'bg-red-600 text-white hover:bg-red-700'
+                                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                                }`}
+                            >
+                                {isSelectionMode ? 'Cancel Selection' : 'Select Photos to Download'}
+                            </button>
                         </div>
                     </div>
 
@@ -347,11 +475,14 @@ const AlbumDetailPage = () => {
                                     </div>
                                 </div>
                                 <button
-                                    onClick={() => setShowDeleteConfirm(true)}
-                                    disabled={selectedPhotos.size === 0}
-                                    className="px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={handleDownloadSelected}
+                                    disabled={selectedPhotos.size === 0 || downloading}
+                                    className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                                 >
-                                    Remove Selected
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M19 9H15V3H9V9H5L12 16L19 9ZM5 18V20H19V18H5Z" fill="currentColor" />
+                                    </svg>
+                                    {downloading ? 'Downloading...' : 'Download Selected'}
                                 </button>
                             </div>
                         </div>
@@ -452,14 +583,26 @@ const AlbumDetailPage = () => {
             {/* Lightbox */}
             {selectedPhoto !== null && photos[selectedPhoto] && (
                 <div className="fixed inset-0 bg-black bg-opacity-95 z-50 flex items-center justify-center">
-                    <button
-                        onClick={closeLightbox}
-                        className="absolute top-4 right-4 text-white hover:text-gray-300 transition-colors"
-                    >
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12L19 6.41Z" fill="currentColor" />
-                        </svg>
-                    </button>
+                    <div className="absolute top-4 right-4 flex gap-2">
+                        <button
+                            onClick={() => handleDownloadSingle(photos[selectedPhoto].id, photos[selectedPhoto].original_file_name)}
+                            disabled={downloading}
+                            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                        >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M19 9H15V3H9V9H5L12 16L19 9ZM5 18V20H19V18H5Z" fill="currentColor" />
+                            </svg>
+                            {downloading ? 'Downloading...' : 'Download'}
+                        </button>
+                        <button
+                            onClick={closeLightbox}
+                            className="text-white hover:text-gray-300 transition-colors"
+                        >
+                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12L19 6.41Z" fill="currentColor" />
+                            </svg>
+                        </button>
+                    </div>
 
                     <button
                         onClick={() => navigateLightbox('prev')}
@@ -495,47 +638,9 @@ const AlbumDetailPage = () => {
                 </div>
             )}
 
-            {/* Edit Album Modal */}
-            <EditAlbumModal
-                isOpen={showEditModal}
-                onClose={() => setShowEditModal(false)}
-                onSave={handleUpdateAlbum}
-                currentTitle={album.title}
-                hasPassword={album.is_password_protected}
-            />
-
-            {/* Delete Photos Confirmation Dialog */}
-            {showDeleteConfirm && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
-                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Remove Photos</h3>
-                        <p className="text-gray-600 mb-4">
-                            Are you sure you want to remove {selectedPhotos.size} photo{selectedPhotos.size !== 1 ? 's' : ''}? This action cannot be undone.
-                        </p>
-
-                        <div className="flex justify-end gap-3">
-                            <button
-                                onClick={() => setShowDeleteConfirm(false)}
-                                disabled={deleting}
-                                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleRemovePhotos}
-                                disabled={deleting}
-                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                {deleting ? 'Removing...' : 'Remove Photos'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             <Footer />
         </div>
     );
 };
 
-export default AlbumDetailPage;
+export default ClientAlbumViewPage;

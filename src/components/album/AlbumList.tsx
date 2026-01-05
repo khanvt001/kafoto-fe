@@ -14,6 +14,9 @@ const AlbumList = ({ onRefresh }: AlbumListProps) => {
     const [currentPage, setCurrentPage] = useState(1);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [deletingAlbumId, setDeletingAlbumId] = useState<number | null>(null);
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [albumToDelete, setAlbumToDelete] = useState<AlbumListItem | null>(null);
 
     const fetchAlbums = async (page: number = 1) => {
         try {
@@ -50,6 +53,37 @@ const AlbumList = ({ onRefresh }: AlbumListProps) => {
         } catch (err) {
             console.error('Failed to copy:', err);
         }
+    };
+
+    const handleDeleteClick = (album: AlbumListItem) => {
+        setAlbumToDelete(album);
+        setShowDeleteConfirm(true);
+    };
+
+    const handleDeleteConfirm = async () => {
+        if (!albumToDelete) return;
+
+        try {
+            setDeletingAlbumId(albumToDelete.id);
+            await albumService.removeAlbum(albumToDelete.id);
+
+            // Refresh the album list
+            await fetchAlbums(currentPage);
+
+            // Close confirmation dialog
+            setShowDeleteConfirm(false);
+            setAlbumToDelete(null);
+        } catch (err) {
+            console.error('Error deleting album:', err);
+            alert(err instanceof Error ? err.message : 'Failed to delete album');
+        } finally {
+            setDeletingAlbumId(null);
+        }
+    };
+
+    const handleDeleteCancel = () => {
+        setShowDeleteConfirm(false);
+        setAlbumToDelete(null);
     };
 
     if (loading) {
@@ -182,12 +216,22 @@ const AlbumList = ({ onRefresh }: AlbumListProps) => {
                                     View
                                 </button>
                                 <button
-                                    onClick={() => copyToClipboard(`${window.location.origin}/albums/${album.code}`)}
+                                    onClick={() => copyToClipboard(`${window.location.origin}/albums/code/${album.code}`)}
                                     className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors"
                                     title="Copy share link"
                                 >
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M18 16.08C17.24 16.08 16.56 16.38 16.04 16.85L8.91 12.7C8.96 12.47 9 12.24 9 12C9 11.76 8.96 11.53 8.91 11.3L15.96 7.19C16.5 7.69 17.21 8 18 8C19.66 8 21 6.66 21 5C21 3.34 19.66 2 18 2C16.34 2 15 3.34 15 5C15 5.24 15.04 5.47 15.09 5.7L8.04 9.81C7.5 9.31 6.79 9 6 9C4.34 9 3 10.34 3 12C3 13.66 4.34 15 6 15C6.79 15 7.5 14.69 8.04 14.19L15.16 18.35C15.11 18.56 15.08 18.78 15.08 19C15.08 20.61 16.39 21.92 18 21.92C19.61 21.92 20.92 20.61 20.92 19C20.92 17.39 19.61 16.08 18 16.08Z" fill="currentColor" />
+                                    </svg>
+                                </button>
+                                <button
+                                    onClick={() => handleDeleteClick(album)}
+                                    disabled={deletingAlbumId === album.id}
+                                    className="px-3 py-2 border border-red-300 text-red-600 text-sm rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="Delete album"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M6 19C6 20.1 6.9 21 8 21H16C17.1 21 18 20.1 18 19V7H6V19ZM19 4H15.5L14.5 3H9.5L8.5 4H5V6H19V4Z" fill="currentColor" />
                                     </svg>
                                 </button>
                             </div>
@@ -220,6 +264,36 @@ const AlbumList = ({ onRefresh }: AlbumListProps) => {
                     >
                         Next
                     </button>
+                </div>
+            )}
+
+            {/* Delete Confirmation Dialog */}
+            {showDeleteConfirm && albumToDelete && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete Album</h3>
+                        <p className="text-gray-600 mb-4">
+                            Are you sure you want to delete <strong>{albumToDelete.title}</strong>?
+                            This action cannot be undone and will permanently delete all {albumToDelete.total_photos} photo{albumToDelete.total_photos !== 1 ? 's' : ''}.
+                        </p>
+
+                        <div className="flex justify-end gap-3">
+                            <button
+                                onClick={handleDeleteCancel}
+                                disabled={deletingAlbumId !== null}
+                                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleDeleteConfirm}
+                                disabled={deletingAlbumId !== null}
+                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {deletingAlbumId !== null ? 'Deleting...' : 'Delete Album'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

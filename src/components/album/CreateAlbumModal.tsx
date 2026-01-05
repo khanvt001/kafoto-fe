@@ -23,6 +23,7 @@ const CreateAlbumModal = ({ isOpen, onClose }: CreateAlbumModalProps) => {
     const [folderUrl, setFolderUrl] = useState('');
     const [title, setTitle] = useState('');
     const [maxWidth, setMaxWidth] = useState(400);
+    const [password, setPassword] = useState('');
     const [urlError, setUrlError] = useState('');
     const [progress, setProgress] = useState<ProgressState>({
         current: 0,
@@ -97,6 +98,7 @@ const CreateAlbumModal = ({ isOpen, onClose }: CreateAlbumModalProps) => {
             setFolderUrl('');
             setTitle('');
             setMaxWidth(400);
+            setPassword('');
             setUrlError('');
             resetProgress();
             onClose();
@@ -130,6 +132,7 @@ const CreateAlbumModal = ({ isOpen, onClose }: CreateAlbumModalProps) => {
                     folder_url: cleanedUrl,
                     title: title,
                     max_width: maxWidth,
+                    password: password,
                 }),
             });
 
@@ -292,6 +295,25 @@ const CreateAlbumModal = ({ isOpen, onClose }: CreateAlbumModalProps) => {
                                 />
                                 <p className="text-xs text-gray-500 mt-1">
                                     Images will be resized to this width while maintaining aspect ratio
+                                </p>
+                            </div>
+
+                            <div>
+                                <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
+                                    Album Password *
+                                </label>
+                                <input
+                                    type="text"
+                                    id="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder="e.g., customer123"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    required
+                                    minLength={4}
+                                />
+                                <p className="text-xs text-gray-500 mt-1">
+                                    Password is required (minimum 4 characters). Clients will need it to view photos.
                                 </p>
                             </div>
 
